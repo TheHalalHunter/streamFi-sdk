@@ -69,7 +69,7 @@ function warnV1Deprecated(methodName: string, replacement: string): void {
     `major version. Use ${replacement} instead.`,
   );
 }
-import { ZERO_ADDR, DEFAULT_LIST_LIMIT, clampListLimit } from './constants.js';
+import { ZERO_ADDR, DEFAULT_LIST_LIMIT, clampListLimit, USDC_ISSUER } from './constants.js';
 
 export class StreamsModule {
   private readonly rpcUrl:     string;
@@ -218,11 +218,12 @@ export class StreamsModule {
     if (token === 'native') {
       resolvedToken = Asset.native().contractId(this.passphrase);
     } else if (token === 'USDC') {
-      if (this.passphrase.includes('Test SDF Network')) {
-        resolvedToken = new Asset('USDC', 'GBBD47IF6LWK7P7MDEVSCWTTCJM4TWCHZR4TCEFUB8IQVGIGY4MBKOMZ').contractId(this.passphrase);
-      } else {
-        resolvedToken = new Asset('USDC', 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5REANYOUR').contractId(this.passphrase);
-      }
+      // Resolve the issuer by network name, not by passphrase substring.
+      // The passphrase check silently fell through to the mainnet issuer for
+      // 'local' networks (their passphrase never includes 'Test SDF Network').
+      // USDC_ISSUER.local is a getter that throws a clear error. See #804.
+      const issuer = USDC_ISSUER[this.config.network];
+      resolvedToken = new Asset('USDC', issuer).contractId(this.passphrase);
     }
 
     // Query token decimals

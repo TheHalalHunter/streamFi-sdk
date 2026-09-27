@@ -4,18 +4,25 @@ export type {
   BatchOperation,
   BatchExecuteOptions,
   BatchExecuteAsyncOptions,
+  BatchChunkProgress,
   BatchResult,
 } from './builder.js';
 export {
   buildBatchTransactions,
   buildBatchTransactionsSync,
   BatchBuildError,
+  submitBatch,
+  BatchPartiallySubmittedError,
 } from './batch-tx.js';
 export type {
   BatchTransactionContext,
   BuiltBatchTransaction,
+  BatchSubmitOutcome,
+  BatchSubmitResult,
+  BatchSubmitOptions,
 } from './batch-tx.js';
-export { GraphQLIndexer } from './indexer.js';
+export { GraphQLIndexer, DEFAULT_INDEXER_MAX_PAGES } from './indexer.js';
+export type { FetchAllOptions } from './indexer.js';
 export { KeypairSigner } from './signer.js';
 export type { Signer } from './signer.js';
 export {
@@ -28,6 +35,7 @@ export {
   InsufficientBalanceError,
   RateLimitError,
   RpcServiceUnavailableError,
+  IndexerMaxPagesExceededError,
   SUPPORTED_NETWORKS,
   UNKNOWN_CONTRACT_ERROR_CODE,
 } from './errors.js';

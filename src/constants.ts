@@ -28,3 +28,32 @@ export function clampListLimit(limit: number): number {
   if (!Number.isFinite(limit)) return DEFAULT_LIST_LIMIT;
   return Math.min(Math.max(Math.trunc(limit), 0), MAX_LIST_LIMIT);
 }
+
+/**
+ * Known USDC issuer G-addresses per network.
+ *
+ * - `mainnet` — Circle's production issuer.
+ * - `testnet` — Circle's Testnet issuer (SDF Test Network).
+ * - `local`   — No canonical USDC issuer exists on a local Soroban instance.
+ *   Accessing this entry throws at runtime so callers get a clear error
+ *   instead of silently inheriting the mainnet address (see #804).
+ *
+ * @example
+ * ```ts
+ * import { USDC_ISSUER } from './constants.js';
+ * const issuer = USDC_ISSUER[network]; // throws on 'local'
+ * ```
+ */
+export const USDC_ISSUER: Record<'mainnet' | 'testnet', string> & {
+  readonly local: never;
+} = {
+  mainnet: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5REANYOUR',
+  testnet: 'GBBD47IF6LWK7P7MDEVSCWTTCJM4TWCHZR4TCEFUB8IQVGIGY4MBKOMZ',
+  get local(): never {
+    throw new Error(
+      "token: 'USDC' is not supported on the 'local' network — no canonical " +
+      'USDC issuer exists on a local Soroban instance. ' +
+      'Pass an explicit contract address for your locally-deployed token instead.',
+    );
+  },
+} as const;

@@ -328,3 +328,219 @@ export async function buildBatchTransactions(
     return { index, method: operation.method, xdr: assembled.toXDR(), prepared: true };
   });
 }
+
+// ── Batch submission ──────────────────────────────────────────────────────────
+
+/** Per-transaction outcome produced by {@link submitBatch}. */
+export interface BatchSubmitOutcome {
+  /** The transaction's position in the original operations array. */
+  index: number;
+  /** `true` when the network accepted the transaction. */
+  success: boolean;
+  /** Transaction hash returned by the RPC node, when available. */
+  hash?: string;
+  /** Error message when `success` is `false`. */
+  error?: string;
+}
+
+/** Aggregate result returned by {@link submitBatch} when `throwOnPartial` is `false`. */
+export interface BatchSubmitResult {
+  /** Outcome for every transaction, in submission order. */
+  outcomes: BatchSubmitOutcome[];
+  /** Number of transactions the network accepted. */
+  successCount: number;
+  /** Number of transactions that failed. */
+  failureCount: number;
+}
+
+/** Options accepted by {@link submitBatch}. */
+export interface BatchSubmitOptions {
+  /**
+   * When `true` and at least one transaction fails, throw a
+   * {@link BatchPartiallySubmittedError} instead of returning the aggregate
+   * result. Defaults to `false`.
+   */
+  throwOnPartial?: boolean;
+  /** AbortSignal to cancel in-flight submissions. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Thrown by {@link submitBatch} when `throwOnPartial: true` and at least one
+ * transaction in the batch failed. Carries the full per-transaction outcome
+ * so callers can inspect what succeeded and what did not.
+ *
+ * Use {@link getFailedOperations} to extract the subset of original operations
+ * that still need to be resubmitted, ready to pass back into
+ * {@link buildBatchTransactions} + {@link submitBatch}:
+ *
+ * @example
+ * ```ts
+ * import {
+ *   buildBatchTransactions,
+ *   submitBatch,
+ *   BatchPartiallySubmittedError,
+ * } from '@conduit-protocol/sdk';
+ *
+ * try {
+ *   const built = await buildBatchTransactions(operations, context);
+ *   await submitBatch(built, rpcUrl, { throwOnPartial: true });
+ * } catch (err) {
+ *   if (err instanceof BatchPartiallySubmittedError) {
+ *     console.log(`${err.result.failureCount} of ${err.result.outcomes.length} failed`);
+ *     const retry = err.getFailedOperations(operations);
+ *     // retry is the subset of `operations` whose transactions failed
+ *   }
+ * }
+ * ```
+ *
+ * See #803.
+ */
+export class BatchPartiallySubmittedError extends Error {
+  /** Full per-transaction submission result. */
+  readonly result: BatchSubmitResult;
+
+  /**
+   * The built transactions that were passed to {@link submitBatch}.
+   * Retained so {@link getFailedOperations} can correlate outcomes back to
+   * the caller's original operation list.
+   */
+  readonly builtTransactions: BuiltBatchTransaction[];
+
+  constructor(result: BatchSubmitResult, builtTransactions: BuiltBatchTransaction[]) {
+    const { failureCount, outcomes } = result;
+    super(
+      `Batch partially submitted: ${failureCount} of ${outcomes.length} transaction(s) failed. ` +
+      `Call getFailedOperations(originalOperations) to get the failed subset for retry.`,
+    );
+    this.name = 'BatchPartiallySubmittedError';
+    this.result = result;
+    this.builtTransactions = builtTransactions;
+    // Maintain correct prototype chain for `instanceof` checks in transpiled JS.
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  /**
+   * Returns the subset of `originalOperations` whose transactions failed,
+   * preserving the original order.
+   *
+   * Pass the same array you supplied to {@link buildBatchTransactions} that
+   * produced the built transactions stored in {@link builtTransactions}.
+   * The returned array is ready to feed directly back into
+   * `buildBatchTransactions` + `submitBatch` for a retry.
+   *
+   * @param originalOperations - The full list of operations that was passed to
+   *   `buildBatchTransactions`. Must be indexable by the `index` field on each
+   *   {@link BuiltBatchTransaction}.
+   */
+  getFailedOperations<T extends { method: string; params?: Record<string, unknown>; args?: unknown[] }>(
+    originalOperations: T[],
+  ): T[] {
+    const failedIndices = new Set(
+      this.result.outcomes
+        .filter(o => !o.success)
+        .map(o => o.index),
+    );
+    return this.builtTransactions
+      .filter(tx => failedIndices.has(tx.index))
+      .map(tx => {
+        const op = originalOperations[tx.index];
+        if (op === undefined) {
+          throw new RangeError(
+            `getFailedOperations: no operation at index ${tx.index}. ` +
+            `Make sure originalOperations is the same array passed to buildBatchTransactions.`,
+          );
+        }
+        return op;
+      });
+  }
+}
+
+/**
+ * Submit a list of pre-built (and optionally prepared) batch transactions to
+ * the Soroban RPC, collecting per-transaction outcomes.
+ *
+ * Failures are isolated: one transaction failing does not abort the others.
+ * Use `throwOnPartial: true` to receive a {@link BatchPartiallySubmittedError}
+ * with a {@link BatchPartiallySubmittedError.getFailedOperations} helper when
+ * any transaction fails.
+ *
+ * @param builtTransactions - Output of {@link buildBatchTransactions}.
+ * @param rpcUrl - Soroban RPC endpoint to submit against.
+ * @param options - Optional abort signal and `throwOnPartial` flag.
+ *
+ * @example
+ * ```ts
+ * const built = await buildBatchTransactions(operations, context);
+ * const result = await submitBatch(built, context.rpcUrl!);
+ * console.log(result.successCount, 'of', result.outcomes.length, 'succeeded');
+ * ```
+ */
+export async function submitBatch(
+  builtTransactions: BuiltBatchTransaction[],
+  rpcUrl: string,
+  options?: BatchSubmitOptions,
+): Promise<BatchSubmitResult> {
+  if (!rpcUrl || typeof rpcUrl !== 'string' || rpcUrl.trim().length === 0) {
+    throw new BatchBuildError('submitBatch: rpcUrl must be a non-empty string');
+  }
+  if (!Array.isArray(builtTransactions)) {
+    throw new BatchBuildError('submitBatch: builtTransactions must be an array');
+  }
+
+  const signal = options?.signal;
+  const throwOnPartial = options?.throwOnPartial ?? false;
+
+  const server = createRpcServer(rpcUrl);
+
+  const outcomes: BatchSubmitOutcome[] = await Promise.all(
+    builtTransactions.map(async (tx): Promise<BatchSubmitOutcome> => {
+      if (signal?.aborted) {
+        return { index: tx.index, success: false, error: 'Aborted' };
+      }
+
+      try {
+        const sent = await server.sendTransaction(
+          // The RPC client accepts the raw XDR envelope string.
+          // Cast through unknown to satisfy the SDK's overloaded type.
+          tx.xdr as unknown as Parameters<typeof server.sendTransaction>[0],
+        );
+
+        if (sent.status === 'ERROR') {
+          const hash = (sent as { hash?: string }).hash;
+          return {
+            index: tx.index,
+            success: false,
+            ...(hash != null ? { hash } : {}),
+            error: `RPC returned status ERROR for transaction at index ${tx.index}`,
+          };
+        }
+
+        const hash = (sent as { hash?: string }).hash;
+        return {
+          index: tx.index,
+          success: true,
+          ...(hash != null ? { hash } : {}),
+        };
+      } catch (err) {
+        const classified = RateLimitError.fromRpcError(err);
+        const message = classified
+          ? classified.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+        return { index: tx.index, success: false, error: message };
+      }
+    }),
+  );
+
+  const successCount = outcomes.filter(o => o.success).length;
+  const failureCount = outcomes.length - successCount;
+  const result: BatchSubmitResult = { outcomes, successCount, failureCount };
+
+  if (throwOnPartial && failureCount > 0) {
+    throw new BatchPartiallySubmittedError(result, builtTransactions);
+  }
+
+  return result;
+}

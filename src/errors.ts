@@ -891,6 +891,7 @@ export class ConfirmationTimeoutError extends Error {
  * - {@link BackdatedStreamError}
  * - {@link ConfirmationTimeoutError}
  * - {@link ValidationError}
+ * - {@link IndexerMaxPagesExceededError}
  */
 export function isConduitError(value: unknown): value is Error {
   if (!(value instanceof Error)) return false;
@@ -914,6 +915,7 @@ export function isConduitError(value: unknown): value is Error {
     'BackdatedStreamError',
     'ConfirmationTimeoutError',
     'ValidationError',
+    'IndexerMaxPagesExceededError',
    ].includes(value.name);
 }
 

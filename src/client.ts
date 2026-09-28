@@ -11,7 +11,8 @@ import type {
   StreamOperation,
 } from "./types/index.js";
 import type { WalletAdapter } from "./adapters/types.js";
-import { DEFAULT_RPC } from "./soroban.js";
+import { DEFAULT_RPC, getServer } from "./soroban.js";
+import { SorobanRpc } from '@stellar/stellar-sdk';
 import { StreamsModule } from "./streams.js";
 import { FactoryModule } from "./factory.js";
 import { GovernorModule } from "./governor.js";
@@ -180,6 +181,16 @@ export class ConduitClient {
   /** Aliased access to Module49. */
   get module49(): Module49 {
     return this.batchEngine;
+  }
+
+  /**
+   * The underlying raw {@link SorobanRpc.Server} instance used by
+   * this client. Advanced integrators building custom contract
+   * interactions can use this to call Soroban RPC methods directly
+   * without creating a duplicate connection.
+   */
+  get rpcServer(): SorobanRpc.Server {
+    return getServer(this.config.rpcUrl);
   }
 
   private readonly config: Required<Pick<ConduitConfig, "network" | "rpcUrl">> &

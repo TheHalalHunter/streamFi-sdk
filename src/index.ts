@@ -35,34 +35,34 @@ export type {
 export { KeypairSigner, LedgerSigner, LedgerErrorType, LedgerHardwareError, normalizeLedgerError, classifyLedgerError } from './signer.js';
 export type { Signer } from './signer.js';
 export {
-  ConduitError,
-  StreamErrorCode,
-  FactoryErrorCode,
-  GovernorErrorCode,
-  UnsupportedChainError,
-  StreamFiNetworkError,
-  InsufficientBalanceError,
-  RateLimitError,
-  RpcServiceUnavailableError,
-  IndexerTimeoutError,
-  OperationAbortedError,
-  StreamNotFoundError,
-  AmountExceedsWithdrawableError,
-  UnauthorizedStreamActionError,
-  InvalidStreamStateError,
-  ClawbackNotEnabledError,
-  RateExceedsMaxError,
-  DurationTooShortError,
-  GovernorInvalidParamError,
-  BackdatedStreamError,
-  ConfirmationTimeoutError,
-  isConduitError,
-  SUPPORTED_NETWORKS,
-
-  CAIP2_TO_NETWORK,
-  UNKNOWN_CONTRACT_ERROR_CODE,
-} from './errors.js';
-export type { ConduitContract, StreamLifecycleState } from './errors.js';
+   SorobanRpcError,
+   ConduitError,
+   StreamErrorCode,
+   FactoryErrorCode,
+   GovernorErrorCode,
+   UnsupportedChainError,
+   StreamFiNetworkError,
+   InsufficientBalanceError,
+   RateLimitError,
+   RpcServiceUnavailableError,
+   IndexerTimeoutError,
+   OperationAbortedError,
+   StreamNotFoundError,
+   AmountExceedsWithdrawableError,
+   UnauthorizedStreamActionError,
+   InvalidStreamStateError,
+   ClawbackNotEnabledError,
+   RateExceedsMaxError,
+   DurationTooShortError,
+   GovernorInvalidParamError,
+   BackdatedStreamError,
+   ConfirmationTimeoutError,
+   isConduitError,
+   SUPPORTED_NETWORKS,
+   CAIP2_TO_NETWORK,
+   UNKNOWN_CONTRACT_ERROR_CODE,
+ } from './errors.js';
+ export type { ConduitContract, StreamLifecycleState, SorobanDiagnosticInfo } from './errors.js';
 export * from './types/index.js';
 export type { GetStreamInfosOptions, GetStreamInfosResult, GetStreamInfosFailure } from './types/index.js';
 export * from './adapters/index.js';
@@ -75,22 +75,24 @@ export type { MappedErrorHandler } from './relayer/ErrorMapper.js';
 
 // Utils are exported via the /utils subpath export, but also available here
 export {
-  toStroops,
-  fromStroops,
-  calculateRate,
-  calculateYield,
-  streamProgress,
-  remainingTime,
-  estimatedCompletionDate,
-  normalizeProgress,
-  withdrawableLocal,
-  sumWithdrawable,
-  bigintSafeStringify,
-  timeoutSignal,
-  streamStatus,
-  formatDuration,
-  parseDuration,
-} from './utils.js';
+   toStroops,
+   fromStroops,
+   calculateRate,
+   calculateYield,
+   streamProgress,
+   remainingTime,
+   estimatedCompletionDate,
+   normalizeProgress,
+   withdrawableLocal,
+   sumWithdrawable,
+   bigintSafeStringify,
+   timeoutSignal,
+   streamStatus,
+   formatDuration,
+   parseDuration,
+   validateAndNormalizeAddress,
+   isValidAddress,
+ } from './utils.js';
 
 // Constants
 export { MIN_STREAM_DURATION_SECONDS } from './constants.js';

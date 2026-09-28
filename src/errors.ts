@@ -1,3 +1,5 @@
+import { SorobanRpc, xdr } from '@stellar/stellar-sdk';
+
 /**
  * Each of the three Conduit contracts defines its own `Error` enum in Rust —
  * the same numeric code means something different in each one (e.g. code 1
@@ -870,6 +872,7 @@ export class ConfirmationTimeoutError extends Error {
  * `instanceof` across realms or bundled chunks.
  *
  * Recognised error classes:
+ * - {@link SorobanRpcError}
  * - {@link ConduitError}
  * - {@link UnsupportedChainError}
  * - {@link StreamFiNetworkError}
@@ -887,10 +890,12 @@ export class ConfirmationTimeoutError extends Error {
  * - {@link DurationTooShortError}
  * - {@link BackdatedStreamError}
  * - {@link ConfirmationTimeoutError}
+ * - {@link ValidationError}
  */
 export function isConduitError(value: unknown): value is Error {
   if (!(value instanceof Error)) return false;
   return [
+    'SorobanRpcError',
     'ConduitError',
     'UnsupportedChainError',
     'StreamFiNetworkError',
@@ -909,7 +914,158 @@ export function isConduitError(value: unknown): value is Error {
     'BackdatedStreamError',
     'ConfirmationTimeoutError',
     'ValidationError',
-  ].includes(value.name);
+   ].includes(value.name);
+}
+
+/**
+ * Result of decoding diagnostic events from a Soroban simulation error.
+ * Extracts structured diagnostic information that is otherwise buried
+ * in raw error strings.
+ */
+export interface SorobanDiagnosticInfo {
+  /** Decoded diagnostic events from the simulation response. */
+  diagnosticEvents: xdr.DiagnosticEvent[];
+  /** Host function call stack extracted from diagnostic events, or null. */
+  hostFunctionCallStack: string[] | null;
+  /** Auth failure reasons extracted from diagnostic events, or null. */
+  authFailureReasons: string[] | null;
+  /** Raw error string from the RPC response. */
+  rpcError: string;
+}
+
+/**
+ * Error thrown when a Soroban contract call reverts or fails at the
+ * RPC level. Unlike the generic `Error` strings previously thrown,
+ * this class extracts structured diagnostic information from the
+ * simulation response including diagnostic events, host function
+ * call stack, and auth failure reasons.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await client.streams.create({ ... });
+ * } catch (err) {
+ *   if (err instanceof SorobanRpcError) {
+ *     console.error(err.rpcError);
+ *     console.error('Diagnostic events:', err.diagnostics.diagnosticEvents);
+ *     console.error('Call stack:', err.diagnostics.hostFunctionCallStack);
+ *     console.error('Auth failures:', err.diagnostics.authFailureReasons);
+ *   }
+ * }
+ * ```
+ */
+export class SorobanRpcError extends Error {
+  /** The raw RPC error string. */
+  readonly rpcError: string;
+  /** Structured diagnostic information extracted from the simulation response. */
+  readonly diagnostics: SorobanDiagnosticInfo;
+
+  constructor(rpcError: string, diagnostics: SorobanDiagnosticInfo) {
+    super(rpcError);
+    this.name = 'SorobanRpcError';
+    this.rpcError = rpcError;
+    this.diagnostics = diagnostics;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  /**
+   * Creates a {@link SorobanRpcError} from a Soroban simulation error response.
+   * Extracts diagnostic events, host function call stack, and auth
+   * failure reasons from the raw response.
+   *
+   * @param simError - The simulation error response from the Soroban RPC.
+   * @returns A typed {@link SorobanRpcError} with structured diagnostics.
+   */
+  static fromSimulationError(simError: { error: string; events?: xdr.DiagnosticEvent[] | string[] }): SorobanRpcError {
+    const rpcError = simError.error ?? 'Unknown Soroban RPC error';
+    const events = simError.events ?? [];
+
+    const diagnosticEvents = events.map(e =>
+      typeof e === 'string' ? xdr.DiagnosticEvent.fromXDR(e, 'base64') : e
+    );
+
+    const hostFunctionCallStack = SorobanRpcError.extractHostFunctionCallStack(diagnosticEvents);
+    const authFailureReasons = SorobanRpcError.extractAuthFailureReasons(diagnosticEvents);
+
+    const diagnostics: SorobanDiagnosticInfo = {
+      diagnosticEvents,
+      hostFunctionCallStack,
+      authFailureReasons,
+      rpcError,
+    };
+
+    return new SorobanRpcError(rpcError, diagnostics);
+  }
+
+  /**
+   * Creates a {@link SorobanRpcError} from a raw unknown error thrown by the RPC client.
+   * Attempts to extract structured information from the error.
+   *
+   * @param raw - The raw error from the RPC client.
+   * @returns A {@link SorobanRpcError} if the error can be decoded, or `null` if not.
+   */
+  static fromRaw(raw: unknown): SorobanRpcError | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const resp = raw as { error?: unknown; events?: unknown; result?: { error?: unknown; events?: unknown } };
+    const result = resp.result as { error?: unknown; events?: unknown } | undefined;
+    const error = typeof resp.error === 'string' ? resp.error :
+      typeof result?.error === 'string' ? String(result.error) : undefined;
+
+    if (!error) return null;
+
+    const events = resp.events ?? result?.events ?? [];
+    return SorobanRpcError.fromSimulationError({ error, events: events as xdr.DiagnosticEvent[] | string[] });
+  }
+
+  /**
+   * Attempts to extract a host function call stack from diagnostic events.
+   * Returns null if no call stack can be identified.
+   */
+  private static extractHostFunctionCallStack(events: xdr.DiagnosticEvent[]): string[] | null {
+    const callStack: string[] = [];
+    for (const event of events) {
+      try {
+        const contractEvent = event.event();
+        const body = contractEvent.body();
+        const v0 = body.v0();
+        const topics = v0.topics()?.map(t => t.toString()) ?? [];
+        const data = v0.data();
+        const dataStr = data?.toString() ?? '';
+        if (topics.length > 0 || dataStr.length > 0) {
+          callStack.push(`Topics: ${topics.join(', ')} | Data: ${dataStr}`);
+        }
+      } catch {
+        // Skip events that can't be decoded
+      }
+    }
+    return callStack.length > 0 ? callStack : null;
+  }
+
+  /**
+   * Attempts to extract auth failure reasons from diagnostic events.
+   * Returns null if no auth failures can be identified.
+   */
+  private static extractAuthFailureReasons(events: xdr.DiagnosticEvent[]): string[] | null {
+    const reasons: string[] = [];
+    for (const event of events) {
+      try {
+        const contractEvent = event.event();
+        const body = contractEvent.body();
+        const v0 = body.v0();
+        const data = v0.data();
+        if (data) {
+          const valStr = data.toString();
+          if (/auth/i.test(valStr) || /authorize/i.test(valStr) || /permission/i.test(valStr)) {
+            reasons.push(valStr);
+          }
+        }
+      } catch {
+        // Skip events that can't be decoded
+      }
+    }
+    return reasons.length > 0 ? reasons : null;
+  }
 }
 
 // ── Validation error ─────────────────────────────────────────────────────────

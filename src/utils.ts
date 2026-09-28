@@ -354,6 +354,49 @@ export function isValidAddress(address: string): boolean {
 }
 
 /**
+ * Validates and normalizes a Stellar address string.
+ *
+ * Performs full type validation and checksum verification using
+ * {@link StrKey}. Returns a structured result with validation status,
+ * any error message, and the normalized address on success.
+ *
+ * @example
+ * ```ts
+ * validateAndNormalizeAddress('GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3CCWFCNJJJ')
+ * // { isValid: true, address: 'GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3CCWFCNJJJ' }
+ *
+ * validateAndNormalizeAddress('not-an-address')
+ * // { isValid: false, error: 'Invalid Stellar address' }
+ * ```
+ */
+export function validateAndNormalizeAddress(address: string): { isValid: boolean, error?: string, address?: string } {
+  if (typeof address !== 'string' || address.length === 0) {
+    return { isValid: false, error: 'Address must be a non-empty string' };
+  }
+
+  try {
+    if (StrKey.isValidEd25519PublicKey(address)) {
+      const decoded = StrKey.decodeEd25519PublicKey(address);
+      const normalized = StrKey.encodeEd25519PublicKey(decoded);
+      return { isValid: true, address: normalized };
+    }
+
+    if (StrKey.isValidContract(address)) {
+      const decoded = StrKey.decodeContract(address);
+      const normalized = StrKey.encodeContract(decoded);
+      return { isValid: true, address: normalized };
+    }
+
+    return { isValid: false, error: 'Invalid Stellar address: not a valid ed25519 public key or contract address' };
+  } catch (err) {
+    return {
+      isValid: false,
+      error: err instanceof Error ? err.message : 'Invalid Stellar address',
+    };
+  }
+}
+
+/**
  * Sum of withdrawable balances across multiple streams.
  *
  * Computes the total amount currently withdrawable from an array of streams

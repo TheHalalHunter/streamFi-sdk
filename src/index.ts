@@ -69,9 +69,10 @@ export * from './adapters/index.js';
 export * from './react/index.js';
 export { FeeEstimator } from './fee-estimator.js';
 export type { FeeEstimateOptions } from './fee-estimator.js';
+export { coalesceAsync } from './coalesce-async.js';
 export { WebSocketRelayer } from './relayer/WebSocketRelayer.js';
-export { ErrorMapper } from './relayer/ErrorMapper.js';
-export type { MappedErrorHandler } from './relayer/ErrorMapper.js';
+export { ErrorMapper, DEFAULT_ERROR_MESSAGE_TYPE_MAP } from './relayer/ErrorMapper.js';
+export type { MappedErrorHandler, ErrorMessageTypeMap } from './relayer/ErrorMapper.js';
 
 // Utils are exported via the /utils subpath export, but also available here
 export {

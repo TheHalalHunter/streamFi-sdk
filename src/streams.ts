@@ -14,6 +14,8 @@ import type {
   Subscription,
   BatchWithdrawItem,
   BatchWithdrawResult,
+  BatchCreateStreamResult,
+  StreamConfig,
   StreamOperation,
   FeeEstimate,
 } from './types/index.js';
@@ -119,9 +121,9 @@ import { ZERO_ADDR, DEFAULT_LIST_LIMIT, clampListLimit, USDC_ISSUER } from './co
 export class StreamsModule {
   private readonly rpcUrl:       string;
   private readonly passphrase:   string;
-  private readonly callerAddr:   string;
   private readonly _factory:     FactoryModule;
   private readonly feeEstimator: FeeEstimator = new FeeEstimator();
+  private readonly feeEstimateCache = new Map<string, { estimate: FeeEstimate; fetchedAt: number }>();
   private activeWallet?:         WalletAdapter;
 
   /**
@@ -714,6 +716,13 @@ export class StreamsModule {
 
     const opType = typeof operation === 'string' ? operation : operation.type;
     const opObj = (typeof operation === 'object' && operation !== null ? operation : {}) as Record<string, any>;
+    const cacheKey = `${opType}:${JSON.stringify(operation, (_key, value) =>
+      typeof value === 'bigint' ? `${value}n` : value,
+    )}`;
+    const cachedEstimate = this.feeEstimateCache.get(cacheKey);
+    if (cachedEstimate && Date.now() - cachedEstimate.fetchedAt < 3_000) {
+      return cachedEstimate.estimate;
+    }
 
     let tx: Transaction;
 
@@ -798,30 +807,29 @@ export class StreamsModule {
       }
     }
 
-    let simResult;
-    try {
-      simResult = await server.simulateTransaction(tx);
-    } catch (err) {
-      throw RateLimitError.fromRpcError(err) ?? err;
-    }
+    let cpuInstructions = 0n;
+    const resourceFee = await this.feeEstimator.estimateFee(async () => {
+      let simResult;
+      try {
+        simResult = await server.simulateTransaction(tx);
+      } catch (err) {
+        throw RateLimitError.fromRpcError(err) ?? err;
+      }
+      if (SorobanRpc.Api.isSimulationError(simResult)) {
+        throw new Error(`Simulation failed: ${simResult.error}`);
+      }
+      cpuInstructions = BigInt(simResult.cost?.cpuInsns ?? 0);
+      return estimateRequiredFee(simResult);
+    }, { cacheKey });
 
-    if (SorobanRpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Simulation failed: ${simResult.error}`);
-    }
-
-    // All fees are bigint stroops — consistent with FeeEstimator and the
-    // rest of the SDK — so large resource fees never lose precision to
-    // IEEE-754 rounding (see #447). `estimateRequiredFee` handles the
-    // minResourceFee/fee extraction with the same fallback used elsewhere.
-    const resourceFee = estimateRequiredFee(simResult);
-    const cpuInstructions = BigInt(simResult.cost?.cpuInsns ?? 0);
-
-    return {
+    const estimate = {
       totalFee: BigInt(BASE_FEE) + resourceFee,
       resourceFee,
       baseFee: BigInt(BASE_FEE),
       instructions: cpuInstructions,
     };
+    this.feeEstimateCache.set(cacheKey, { estimate, fetchedAt: Date.now() });
+    return estimate;
   }
 
   /**
@@ -962,6 +970,78 @@ export class StreamsModule {
         const error = err instanceof Error ? err : new Error(String(err));
         handlers.onError?.(error);
         console.warn('[conduit-sdk] subscribe error:', error);
+      });
+
+    return {
+      unsubscribe: () => {
+        stopped = true;
+        if (inner) {
+          inner.unsubscribe();
+          inner = null;
+        }
+        // Release handler references to prevent memory leaks
+        handlers = {};
+      },
+    };
+  }
+
+  /**
+   * Subscribe to on-chain events for multiple streams at once. Returns an
+   * async subscription handle whose `unsubscribe()` tears down every
+   * underlying per-stream subscription together (#797).
+   *
+   * A stream ID that fails to resolve to an address is reported
+   * individually via `handlers.onError` rather than rejecting the whole
+   * batch — one bad ID in a portfolio of 50 shouldn't prevent subscribing
+   * to the other 49.
+   */
+  async subscribeToStreamsAsync(
+    streamIds: Array<bigint | string>,
+    handlers:  StreamEventHandlers,
+  ): Promise<Subscription> {
+    const outcomes = await Promise.all(
+      streamIds.map(async (streamId) => {
+        try {
+          const address = await this._factory.streamAddress(BigInt(streamId));
+          if (!address) throw new Error(`Stream ${streamId} not found`);
+          return { ok: true as const, address };
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          return { ok: false as const, error };
+        }
+      }),
+    );
+
+    for (const outcome of outcomes) {
+      if (!outcome.ok) {
+        try {
+          handlers.onError?.(outcome.error);
+        } catch (handlerError) {
+          console.warn('[conduit-sdk] subscribeToStreams onError handler error:', handlerError);
+        }
+      }
+    }
+
+    const addresses = outcomes
+      .filter((outcome): outcome is { ok: true; address: string } => outcome.ok)
+      .map((outcome) => outcome.address);
+
+    const { subscribeToStreams } = await import('./events.js');
+    // Use the resolved `this.rpcUrl` — see the identical note in `subscribeAsync`.
+    return subscribeToStreams(this.rpcUrl, addresses, handlers);
+  }
+
+  /** Synchronous subscribeToStreams - resolves addresses lazily on first poll tick. */
+  subscribeToStreams(streamIds: Array<bigint | string>, handlers: StreamEventHandlers): Subscription {
+    let inner: Subscription | null = null;
+    let stopped = false;
+
+    this.subscribeToStreamsAsync(streamIds, handlers)
+      .then(sub => { if (!stopped) inner = sub; else sub.unsubscribe(); })
+      .catch(err => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        handlers.onError?.(error);
+        console.warn('[conduit-sdk] subscribeToStreams error:', error);
       });
 
     return {
